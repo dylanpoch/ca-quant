@@ -1,0 +1,252 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-04-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#For Camila (updated 3/4/25)
+library(openxlsx)
+library(ggplot2)
+library(data.table)
+library(tidyr)
+library(ggpval)
+library(ggprism)
+library(patchwork)
+library(magrittr)
+library(dplyr)
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(RColorBrewer)
+library(ggpattern)
+library(stringr)
+library(viridis)
+```
+
+
+```{r}
+
+save_Location <- '/Volumes/CG UTR DATA/Ca Imaging TRPM8 UTRs Replicates/Replicates that worked/Analysis_4_4_25_dp/'
+
+df1 <- read.csv(paste0(save_Location, "TRPM8_Promoters_4_3_25_dpAllCells.csv"))
+
+df_Names <- read.csv(paste0(save_Location, "TRPM8_Promoters_4_3_25_dpImage.csv"))
+df_Names <- df_Names[, c("FileName_Cell","ImageNumber")]
+
+df1 <- merge(df_Names,df1, by = "ImageNumber" )
+
+df2 <- df1[, c("FileName_Cell", "ImageNumber", "Intensity_MeanIntensity_OrigGreen", "Intensity_IntegratedIntensity_OrigGreen",  "Intensity_MedianIntensity_OrigGreen")]
+
+sub_df2 <- df2 %>% separate(FileName_Cell, into = c("BiologicalRep", "Condition", "FileName2"), sep = "_")
+
+sub_df2$BiologicalRep <- str_sub(sub_df2$BiologicalRep, start = -1)
+sub_df2$Time <- str_sub(sub_df2$FileName2, start = -7, end = -5)
+sub_df2$Replicate <- str_sub(sub_df2$FileName2, start = 1, end = 1)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+#Subtract by average of lowest 1% of cells
+df_adjusted <- sub_df2 %>%
+  group_by(Time, Replicate, BiologicalRep) %>%
+  mutate(
+    # Calculate the threshold for bottom 25% of cells for green intensity (to account for transfection efficiency)
+    ratioThreshold = mean(sort(Intensity_MeanIntensity_OrigGreen)[1:ceiling(0.25 * n())], na.rm = TRUE),
+
+    # Subtract by the threshold
+    ratioAdjusted = Intensity_MeanIntensity_OrigGreen - ratioThreshold,
+  )
+ 
+
+# View the result
+df_adjusted <- df_adjusted[df_adjusted$ratioAdjusted != Inf, ]
+
+df_adjusted <- df_adjusted[df_adjusted$ratioAdjusted > 0, ]
+
+#Make a binary expressed vs non-expressed readout
+df_adjusted$BinaryActive <- df_adjusted %>%  mutate(across(ratioAdjusted, ~ ifelse(. >=0.3, 1, 0))) %>% pull(ratioAdjusted)
+
+#USE THIS:
+##################
+#Use this most likely:
+results <- df_adjusted %>%
+  group_by(across(c(Time, Condition, BiologicalRep, Replicate))) %>%
+  arrange(desc(ratioAdjusted), .by_group = TRUE) %>%
+  mutate(row_num = row_number()) %>%
+  #filter(row_num > 10) %>%
+  slice_head(n = 500) %>%
+  summarize(
+    mean_Ratio = mean(ratioAdjusted, na.rm = TRUE),
+    median_Ratio = median(ratioAdjusted, na.rm = TRUE),
+    max_Ratio = max(ratioAdjusted, na.rm = TRUE),
+    min_Ratio = min(ratioAdjusted, na.rm = TRUE),
+    sds = sd(ratioAdjusted, na.rm = TRUE),
+    numbers = n(),
+    Expressing = sum(BinaryActive == 1),
+    NotExpressing = sum(BinaryActive == 0),
+    .groups = "drop"
+  )
+#results <- results[results$BiologicalRep != 3, ]
+
+results$RatioExpressing <- results %>% summarize(RatioExpressing = (Expressing / (Expressing + NotExpressing)) * 100) %>% pull (RatioExpressing)
+
+# normalized_results <- results %>%
+#   left_join(wt_results, by = c("Time", "BiologicalRep", "Replicate")) %>%  # Join by grouping variables
+#   mutate(normalized_Ratio = mean_Ratio / WT_mean)  # Normalize
+# normalized_results <- drop_na(normalized_results)
+
+results$NormalizedRatio <-results %>% group_by(BiologicalRep) %>% mutate(WT_mean = mean(mean_Ratio[Condition == "WT M8" & Time == "045"]), NormalizedRatio = mean_Ratio/ WT_mean) %>% pull(NormalizedRatio)
+
+ results_summary_AcrossRep <- results %>%
+  group_by(Time, Condition, BiologicalRep) %>%
+  summarise(AcrossRep = mean(mean_Ratio), sdsRep = (sd(mean_Ratio)), RatioExpressing_AcrossRep = mean(RatioExpressing), sds_Rep_Expressing = sd(RatioExpressing), meanNormalizedRep = mean(NormalizedRatio))
+ 
+ results <- merge(results, results_summary_AcrossRep, by = c("BiologicalRep","Condition", "Time"))
+
+#  
+results_summary_AcrossBio <- results_summary_AcrossRep %>%
+  group_by(Time, Condition) %>%
+  summarise(AcrossBio = mean(AcrossRep), BioSE = (sd(AcrossRep) ), RatioExpressing_AcrossBio = mean(RatioExpressing_AcrossRep), sds_Bio_Expressing = sd(RatioExpressing_AcrossRep), meanNormalizedBio = mean(meanNormalizedRep), sdNormalizedBio = sd(meanNormalizedRep) / sqrt(n()))
+
+results <- merge(results, results_summary_AcrossBio, by = c("Condition", "Time"))
+
+# 
+# results_summary_combinedRepBio <- results %>% 
+#   group_by(Time, Condition, BiologicalRep) %>% 
+#   summarise(combinedRepBio_mean = mean(mean_Ratio), combinedRepBio_se = sd(mean_Ratio) / sqrt(n()), combinedRepBio_sd = sd(mean_Ratio))
+# 
+# results <- merge(results, results_summary_combinedRepBio, by = c("Condition", "Time"))
+
+ # 
+# results <- results %>% mutate(
+#   finalSD = ifelse(is.na(sdsBio), sdsRep, sdsBio),
+#   errorBarColor = ifelse(is.na(sdsBio), "red", "black")
+# )
+
+
+# results <- results %>%
+#   group_by(Time, Condition, BiologicalRep, ) %>%  # Group by relevant replicates
+#   mutate(WT_mean = mean_Ratio[Condition == "WT M8" & Time == "045"],  # Extract WT M8 at 45 sec
+#          Normalized_Ratio = mean_Ratio / WT_mean) %>%  # Normalize each data point
+#   ungroup()
+results
+```
+
+```{r}
+barPlot_Fig <- ggplot(results, aes(x = Condition, y = AcrossBio, fill = Time)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.5, alpha = 0.6) +
+  
+  geom_errorbar(aes(ymin = AcrossBio - BioSE, ymax = AcrossBio + BioSE), 
+                position = position_dodge(width = 0.8), width = 0.4) +
+  
+   geom_point(data = results, aes(x = Condition, y = AcrossRep, group = Time, color = BiologicalRep),
+             position = position_jitterdodge(jitter.width = 0, dodge.width = 0.8),
+             size = 3, alpha = 0.99, show.legend = TRUE) +
+
+    theme_classic() +
+  labs(y = "Ratio (340/380 [nm]: Green Channel)", title = "TRPM8 Promoters; Top 500 Cells, Biological Replicate Mean:") + 
+    theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 18), axis.title.x = element_blank()) +
+  theme(axis.text.x = element_text(size = 18, angle = 55, hjust = 1)) +
+  
+  labs(fill = " ") +
+  # scale_fill_brewer(palette = "Set1") + 
+  # scale_color_brewer(palette = "Set1") +  # Adjust color palette for Replicate
+  coord_cartesian(ylim = c(0, max(results$AcrossBio + results$BioSE + 0.05)))+
+  scale_fill_viridis(discrete = TRUE, option = "C", direction = -1,  begin = 0.2, end = 0.6) +
+  scale_color_manual(values = c("red",  "black", "green", "blue"))
+  # Adjust y-axis limits
+
+# Display the plot
+print(barPlot_Fig)
+
+ggsave(paste0(save_Location, "TRPM8_Promoters_4_3_25_dp_5SD.pdf"), barPlot_Fig, width = 10, height = 10)
+
+wb <- createWorkbook()
+#OR if file is already created:
+#wb <- loadWorkbook(save_Location)
+addWorksheet(wb, "RunResults")
+addWorksheet(wb, "RawData")
+
+
+results_toExport <- results %>%
+  group_by(Condition, Time, Replicate, BiologicalRep) %>%
+  summarise(
+    mean_mean_Ratio = mean(mean_Ratio, na.rm = TRUE),
+    median_mean_Ratio = median(mean_Ratio, na.rm = TRUE),
+    mean_median_Ratio = mean(median_Ratio, na.rm = TRUE),
+    median_median_Ratio = median(median_Ratio, na.rm = TRUE),
+    sds = ifelse(n() > 1, sd(mean_Ratio, na.rm = TRUE), NA)# Compute SD if more than 1 value, else NA
+  )
+
+writeData(wb, sheet = "RunResults", x = results_toExport, startCol = 1, startRow = 1)
+writeData(wb, sheet = "RawData", x = results, startCol = 1, startRow = 1)
+
+saveWorkbook(wb, paste0(save_Location, "TRPM8_Promoters_4_3_25_dp25_SD.pdf.xlsx"), overwrite = T)
+
+
+
+```
+```{r}
+
+
+boxPlot_Fig <- ggboxplot(
+  sub_df2, 
+  x = "Condition", 
+  y = "Intensity_MeanIntensity_OrigGreen", 
+  fill = "Time", 
+  color = "black", # Change to black outline for better visibility
+  alpha = 0.6, # Slightly transparent boxes
+  width = 0.7, 
+  outlier.shape = NA,
+  palette = "npg" # Use a publication-ready color palet# Make sure boxes are dodged consistently
+) + 
+  # Add points with biological replicate coloring
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8), 
+    aes(color = Replicate, group = interaction(Time, Condition)), 
+    size = 0.2, 
+    alpha = 0.8,
+    show.legend = TRUE
+  ) +
+  # Add better legends
+  labs(y = "Ratio (340/380 [nm]: Green Channel)", title = "TRPV1 Promoters; Top 500 Cells, Replicate Mean:") + 
+  labs(fill = "Time", color = "Replicate") +
+  # Use a color palette suitable for categorical data
+  scale_color_brewer(palette = "Dark2") +
+  # Improve theme
+  theme_classic() +
+      theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 18), axis.title.x = element_blank()) +
+  theme(axis.text.x = element_text(size = 18, angle = 55, hjust = 1)) +
+  
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    legend.position = "right"
+  )
+
+print(boxPlot_Fig)
+
+ggsave(paste0(save_Location, "TRPV1_Promoters_3_27_25_dpAllCellsBoxPlot.PDF"), boxPlot_Fig, width = 10, height = 10)
+
+
+
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
