@@ -1,0 +1,388 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(openxlsx)
+
+
+save_Location <- "/Users/dylan/Downloads/"
+export_Location <- "/Users/dylan/Downloads/"
+variable <- "TRPA1_promoters_10_17_25_dp"
+titleVariable <- "TRPA1 Promoters"
+
+
+# ============================================================
+# LOAD + PARSE DATA
+# ============================================================
+df1 <- read.csv(paste0(save_Location,
+                       "TRPA1_promoters_10_17_25_dp_updatedCPAllCells.csv"))
+
+df1 <- df1[, c("FileName_Cell", "ImageNumber",
+               "Intensity_MeanIntensity_OrigGreen",
+               "Intensity_IntegratedIntensity_OrigGreen",
+               "Intensity_MedianIntensity_OrigGreen")]
+
+sub_df1 <- df1 %>%
+  separate(FileName_Cell, into = c("BiologicalRep", "Condition", "FileName2"), sep = "_")
+
+sub_df1$BiologicalRep <- str_sub(sub_df1$BiologicalRep, start = -1)
+sub_df1$Time      <- str_sub(sub_df1$FileName2, start = -7, end = -5)
+sub_df1$Replicate <- str_sub(sub_df1$FileName2, start = 1, end = 1)
+
+sub_df1 <- sub_df1 %>%
+  filter(
+    Intensity_MeanIntensity_OrigGreen != Inf,
+    Intensity_MeanIntensity_OrigGreen > 0,
+    Time != "005"
+  )
+
+
+
+sub_df1 = sub_df1 %>% group_by(Condition, BiologicalRep, Replicate) %>% mutate(TechnicalReplicateNumber = n())
+sub_df1 = sub_df1 %>% group_by(Condition, BiologicalRep) %>% mutate(BiologicalReplicateNumber = n())
+sub_df1 = sub_df1 %>% group_by(Condition) %>% mutate(TotalperCondition = n())
+
+wb <- createWorkbook()
+addWorksheet(wb, "AllCells")
+writeData(wb, sheet = "AllCells",  x = sub_df1, startCol = 1, startRow = 1)
+
+
+
+
+#Only if needed:
+sub_df1 <- sub_df1 %>% 
+  mutate(
+    BiologicalRep = as.character(BiologicalRep),
+    BiologicalRep = dplyr::recode(BiologicalRep, "G" = "1")
+  )
+# ============================================================
+# FILTER REAL BIOLOGICAL REPLICATES (3, 4, 5)
+# ============================================================
+df <- sub_df1 %>%
+  filter(BiologicalRep %in% c("2", "3", "5"))
+
+R.version
+
+# ============================================================
+# TECHNICAL REPLICATE MEANS
+# ============================================================
+df_tech <- df %>%
+  group_by(Condition, BiologicalRep, Replicate) %>%
+  summarise(
+    mean_intensity = mean(Intensity_MeanIntensity_OrigGreen),
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# SET REFERENCE GROUP
+# ============================================================
+ref_group <-  "WT A1"
+df_tech$Condition <- relevel(factor(df_tech$Condition), ref = ref_group)
+
+
+# ============================================================
+# MIXED MODEL
+# ============================================================
+model_tech <- lmer(
+  mean_intensity ~ Condition + (1 | BiologicalRep),
+  data = df_tech
+)
+
+summary(model_tech)
+anova_tech <- anova(model_tech, type = 3)
+anova_tech
+
+
+# ============================================================
+# POSTHOC VS WT (BH)
+# ============================================================
+emm_tech <- emmeans(model_tech, ~ Condition)
+
+posthoc_WT <- contrast(
+  emm_tech,
+  method = "trt.vs.ctrl",
+  ref = ref_group,
+  adjust = "BH"
+)
+
+posthoc_WT_df <- as.data.frame(posthoc_WT)
+
+posthoc_WT_df$Significance <- cut(
+  posthoc_WT_df$p.value,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("***", "**", "*", "ns")
+)
+
+posthoc_WT_df
+
+
+# ============================================================
+# PREPARE ANNOTATION LABELS
+# ============================================================
+posthoc_labels <- posthoc_WT_df %>%
+  mutate(
+    group = sub(paste0(" - ", ref_group), "", contrast),
+    label = Significance
+  ) %>%
+  dplyr::select(group, label)
+ 
+
+# ============================================================
+# DATA FOR VIOLIN PLOT
+# ============================================================
+df_plot <- df %>%
+  mutate(Condition = factor(Condition, levels = levels(df_tech$Condition)))
+
+max_vals <- df_plot %>%
+  group_by(Condition) %>%
+  summarise(y_pos = max(Intensity_MeanIntensity_OrigGreen, na.rm = TRUE))
+
+annotation_df <- max_vals %>%
+  left_join(posthoc_labels, by = c("Condition" = "group"))
+
+
+# ============================================================
+# FINAL VIOLIN PLOT WITH P-VALUE ANNOTATIONS
+# ============================================================
+library(ggplot2)
+library(dplyr)
+
+# ----------------------------
+# 1. Academic color palette
+# ----------------------------
+bio_colors <- c(
+  "2" = "#1B76AF",   # muted blue
+  "3" = "#6C9F3A",   # muted green
+  "5" = "#C47E29"    # muted amber/orange
+)
+violin_plot_annot <- ggplot(
+  df_plot,
+  aes(
+    x = Condition,
+    y = Intensity_MeanIntensity_OrigGreen
+  )
+) +
+  # ----------------------------
+  # Violin (30% more transparent)
+  # ----------------------------
+  geom_violin(
+    fill = "grey85",
+    color = "black",
+    alpha = 0.9,        # was 0.9 → ~30% more transparent
+    trim = FALSE
+  ) +
+
+  # ----------------------------
+  # Boxplot overlay
+  # ----------------------------
+  geom_boxplot(
+    width = 0.10,
+    outlier.shape = NA,
+    alpha = 0.9,
+    color = "black",
+    fill = "white",
+    linewidth = 0.5
+  ) +
+
+  # ----------------------------
+  # Jitter points by Bio Rep
+  # ----------------------------
+  geom_jitter(
+    aes(color = BiologicalRep),   # adds Bio Rep colors to legend
+    width = 0.12,
+    size = 0.65,
+    alpha = 0.12,
+    stroke = 0
+  ) +
+
+  scale_color_manual(
+    values = bio_colors,
+    name   = "Bio. Rep."      # <-- legend label updated
+  ) +
+
+  # ----------------------------
+  # Significance labels (raised + larger)
+  # ----------------------------
+  geom_text(
+    data = max_vals %>%
+      left_join(posthoc_labels, by = c("Condition" = "group")),
+    aes(
+      x = Condition,
+      y = y_pos * 1.14,      # raised (was 1.08)
+      label = label
+    ),
+    color = "black",
+    size = 6.5,              # slightly larger (was 5)
+    vjust = 0,
+    fontface = "bold"
+  ) +
+
+  labs(
+    title = paste0(titleVariable, " — Single-Cell Intensity (Mixed Model Statistics)"),
+    y = "Mean Green Intensity (per cell)",
+    x = NULL
+  ) +
+
+  # ----------------------------
+  # Prism-style theme
+  # ----------------------------
+  theme_bw(base_size = 12) +
+  theme(
+    panel.border = element_rect(color = "black", linewidth = 0.6),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "right",
+    plot.title = element_text(size = 14, face = "bold")
+    
+  ) +
+   guides(
+    color = guide_legend(
+      override.aes = list(
+        size = 4,    # enlarge legend dots
+        alpha = 1
+      )
+    )
+  )
+
+print(violin_plot_annot)
+
+ggsave(
+  filename = paste0(export_Location, variable, "violinplot_400ppi.png"),
+  plot = violin_plot_annot,
+  device = "png",
+  dpi = 400,
+  width = 8,      # adjust if you want wider
+  height = 6,      # adjust if needed
+  units = "in"
+)
+
+
+# ============================================================
+# PREPARE DATA FOR VOLCANO PLOT
+# ============================================================
+
+volcano_df <- posthoc_WT_df %>%
+  mutate(
+    Condition = sub(paste0(" - ", ref_group), "", contrast),
+    neg_log_p = -log10(p.value)
+  )
+
+# ============================================================
+# VOLCANO PLOT (t-value vs –log10(p))
+# ============================================================
+
+ 
+
+library(ggrepel)  # <- Essential for smart label positioning
+
+# ============= OPTION 1: Using ggrepel (RECOMMENDED) =============
+# This automatically prevents label overlap
+
+volcano_t_plot_repel <- ggplot(
+  volcano_df,
+  aes(
+    x = t.ratio,
+    y = neg_log_p,
+    label = Condition
+  )
+) +
+  # Points WITHOUT jitter (keep positions accurate)
+  geom_point(
+    size = 4,
+    alpha = 0.75,
+    color = "black"
+  ) +
+  # Smart labels with connecting lines
+  geom_text_repel(
+    size = 3.5,
+    box.padding = 0.35,        # Space around labels
+    point.padding = 0.2,       # Space from points
+    segment.color = "grey50",  # Color of connecting lines
+    segment.size = 0.3,        # Thickness of lines
+    segment.alpha = 0.6,
+    max.overlaps = Inf,        # Show all labels
+    min.segment.length = 0,    # Always draw segment
+    force = 2,                 # Repulsion strength
+    force_pull = 0.5           # Attraction to original position
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Volcano Plot — t-value vs –log10(p) (vs WT)",
+    x = "t-value (t.ratio)",
+    y = "-log10(BH-adjusted p-value)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+print(volcano_t_plot_repel)
+ggsave(paste0(export_Location, variable, "_volcano_repel.pdf"), 
+       volcano_t_plot_repel, width = 10, height = 8)
+
+
+print(volcano_t_plot)
+
+ggsave(
+  filename = paste0(export_Location, variable, "_volcano.png"),
+  plot = volcano_t_plot,
+  device = "png",
+  dpi = 400,
+  width = 6,      # adjust if you want wider
+  height = 6,      # adjust if needed
+  units = "in"
+)
+
+
+
+addWorksheet(wb, "ANOVA_mixed_model")
+writeData(wb, "ANOVA_mixed_model", anova_tech)
+
+model_summary_df <- as.data.frame(coef(summary(model_tech)))
+
+addWorksheet(wb, "Model_Summary")
+writeData(wb, "Model_Summary", model_summary_df)
+
+
+emm_df <- as.data.frame(emm_tech)
+
+addWorksheet(wb, "EMMs")
+writeData(wb, "EMMs", emm_df)
+
+addWorksheet(wb, "PostHoc_vs_WT")
+writeData(wb, "PostHoc_vs_WT", posthoc_WT_df)
+
+
+addWorksheet(wb, "Technical_Means")
+writeData(wb, "Technical_Means", df_tech)
+
+addWorksheet(wb, "Volcano_tPlot")
+writeData(wb, "Volcano_tPlot", volcano_df)
+
+
+saveWorkbook(wb, paste0(export_Location, variable, ".xlsx"), overwrite = TRUE)
+
+
+unique(df$Condition)
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
