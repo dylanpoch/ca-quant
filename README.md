@@ -1,6 +1,6 @@
 # ca-quant
 
-Quantify the results of calcium imaging data at both a single cell and aggregate level.
+Quantify the results of ratiometric calcium imaging data at both a single cell and aggregate level.
 
 ## Overview
 
