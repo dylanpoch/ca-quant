@@ -1,0 +1,282 @@
+```{r}
+
+#This version compares the size and number of stress granules (G3BP1-GFP) across different UTRs +/- NaAsO2. 
+#---------------------------
+#IMPORT PACKAGES
+#---------------------------
+packages <- c(
+  "openxlsx","ggplot2","data.table","tidyr","ggpval","ggprism",
+  "patchwork","magrittr","dplyr","tidyverse","rstatix",
+  "ggpubr","RColorBrewer","scales"
+)
+
+load_or_install <- function(pkgs) {
+  for (p in pkgs) {
+    if (!requireNamespace(p, quietly = TRUE)) {
+      install.packages(p)
+    }
+    suppressPackageStartupMessages(library(p, character.only = TRUE))
+  }
+}
+
+load_or_install(packages)
+
+
+#---------------------------
+#IMPORT AND CLEAN DATASETS
+#---------------------------
+
+setwd("C:/User/")
+pathName <-"C:/User/"
+ 
+#For WT:
+SG_GFP_WT = read.csv(paste0(pathName, "WT_replicate_StressGranules.csv" ))
+SG_parent_WT = read.csv(paste0(pathName, "WT_replicate_GFP_foci_combined.csv" ))
+SG_transfected_without_granules_WT = read.csv(paste0(pathName, "WT_replicate_GFP_transfected.csv"))
+
+SG_GFP_WT_sub = SG_GFP_WT[, c("ImageNumber", "ObjectNumber", "FileName_DAPI", "AreaShape_Area", "Intensity_IntegratedIntensity_GFP", "Intensity_MeanIntensity_GFP", "Parent_GFP_foci_combined" )]
+SG_parent_WT_sub <- SG_parent_WT[, c("ImageNumber", "ObjectNumber", "FileName_DAPI", "Parent_GFP_transfected")]
+
+merge_WT <- SG_GFP_WT_sub %>%
+  left_join(SG_parent_WT_sub, by = c("ImageNumber", "ObjectNumber", "FileName_DAPI"))
+colnames(SG_GFP_WT)
+merge_WT
+
+merge_WT <- merge_WT %>% group_by(ImageNumber, FileName_DAPI, Parent_GFP_transfected) %>% summarize(sum_II = sum(Intensity_IntegratedIntensity_GFP), sum_Area = sum(AreaShape_Area), avg_Intensity = mean(Intensity_MeanIntensity_GFP), number_granules = n() )
+
+SG_transfected_without_granules_WT_sub = SG_transfected_without_granules_WT[, c("ImageNumber", "ObjectNumber", "FileName_DAPI")]
+colnames(SG_transfected_without_granules_WT_sub)[2] = "Parent_GFP_transfected"
+
+mergeWT_ <- SG_transfected_without_granules_WT_sub  %>%
+  left_join(merge_WT, by = c("ImageNumber", "Parent_GFP_transfected", "FileName_DAPI"))
+mergeWT_ <- mergeWT_ %>%
+  mutate(across(where(is.numeric), ~ replace_na(., 0)))
+
+
+
+#For UTR dataframe:
+SG_GFP_520 = read.csv(paste0(pathName, "UTR_replicate_StressGranules.csv" ))
+SG_parent_520  = read.csv(paste0(pathName, "UTR_replicate_GFP_foci_combined.csv" ))
+SG_transfected_without_granules_520 = read.csv(paste0(pathName, "UTR_replicate_GFP_transfected.csv"))
+
+SG_GFP_520_sub = SG_GFP_520[, c("ImageNumber", "ObjectNumber", "FileName_DAPI", "AreaShape_Area", "Intensity_IntegratedIntensity_GFP", "Intensity_MeanIntensity_GFP", "Parent_GFP_foci_combined" )]
+SG_parent_520_sub <- SG_parent_520[, c("ImageNumber", "ObjectNumber", "FileName_DAPI", "Parent_GFP_transfected")]
+
+merge_520 <- SG_GFP_520_sub %>%
+  left_join(SG_parent_520_sub, by = c("ImageNumber", "ObjectNumber", "FileName_DAPI"))
+colnames(SG_GFP_520)
+merge_520
+
+
+merge_520 <- merge_520%>% group_by(ImageNumber, FileName_DAPI, Parent_GFP_transfected) %>% summarize(sum_II = sum(Intensity_IntegratedIntensity_GFP), sum_Area = sum(AreaShape_Area), avg_Intensity = mean(Intensity_MeanIntensity_GFP), number_granules = n() )
+
+SG_transfected_without_granules_520_sub = SG_transfected_without_granules_520[, c("ImageNumber", "ObjectNumber", "FileName_DAPI")]
+colnames(SG_transfected_without_granules_520_sub)[2] = "Parent_GFP_transfected"
+
+merge_520_ <- SG_transfected_without_granules_520_sub  %>%
+  left_join(merge_520, by = c("ImageNumber", "Parent_GFP_transfected", "FileName_DAPI"))
+merge_520_ <- merge_520_ %>%
+  mutate(across(where(is.numeric), ~ replace_na(., 0)))
+
+
+#Merge Dataframes (WT + UTR):
+df <- bind_rows(merge_520_, mergeWT_)
+
+
+
+#Segregate conditions based on keywords in filename (UTR520 vs WT, etc.)
+replace_Names <- function(x) {
+  
+  x <- gsub(".*UTR520_G3BP1_NoArs.*", "UTR 520", x)
+  x <- gsub(".*UTR520_G3BP1_withArs.*", "UTR 520 + NaAsO2", x)
+  x <- gsub(".*WT_G3BP1_NoArs.*", "WT", x)
+  x <- gsub(".*WT_G3BP1_withArs.*", "WT + NaAsO2", x)
+} 
+
+#Apply the replace_Names function:
+sub_df2 <- df
+sub_df2$Names <- sapply(sub_df2$FileName_DAPI, replace_Names)
+
+sub_df2 <- sub_df2 %>%
+  mutate(Condition = ifelse(grepl("NoArs", FileName_DAPI),
+                            "(-) NaAsO₂",
+                            "(+) NaAsO₂"))
+
+#Factor:
+sub_df2$Names <- factor(sub_df2$Names,
+                            levels = c("UTR 520", "WT", "UTR 520 + NaAsO2", "WT + NaAsO2"))
+
+
+#---------------------------
+#SUMMARY AND STATISTICS
+#---------------------------
+
+#Summary:
+summary_statistics = sub_df2 %>% group_by(Names) %>%
+  summarize(mean_SGs = mean(number_granules), mean_summation_II = mean(sum_II), mean_summation_area = mean(sum_Area), meann_avg_intensity = mean(avg_Intensity))
+
+# Statistics (ANOVA + Tukey):
+# Perform one-way ANOVA
+anova_result <- aov(number_granules ~ Names, data = sub_df2)
+
+# View the ANOVA summary
+summary(anova_result)
+
+# Post-hoc test (if ANOVA is significant)
+# Tukey's HSD for pairwise comparisons
+tukey_result <- TukeyHSD(anova_result)
+print(tukey_result)
+
+# Convert Tukey results to dataframe with stars
+tukey_df <- as.data.frame(tukey_result$Names)
+tukey_df$comparison <- rownames(tukey_df)
+
+# Add significance stars based on p-values
+tukey_df$stars <- ifelse(tukey_df$`p adj` < 0.001, "***",
+                  ifelse(tukey_df$`p adj` < 0.01, "**",
+                  ifelse(tukey_df$`p adj` < 0.05, "*",
+                  ifelse(tukey_df$`p adj` < 0.1, ".", "ns"))))
+
+# Reorder columns for better readability
+tukey_df <- tukey_df[, c("comparison", "diff", "lwr", "upr", "p adj", "stars")]
+
+# Print the results
+print(tukey_df)
+
+
+
+#Repeat Anova but for area:
+# Statistics (ANOVA + Tukey):
+# Perform one-way ANOVA
+anova_result_area <- aov(sum_Area ~ Names, data = sub_df2)
+
+# View the ANOVA summary
+summary(anova_result_area)
+
+# Post-hoc test (if ANOVA is significant)
+# Tukey's HSD for pairwise comparisons
+tukey_result_area <- TukeyHSD(anova_result_area)
+print(tukey_result_area)
+
+# Convert Tukey results to dataframe with stars
+tukey_df_area <- as.data.frame(tukey_result_area$Names)
+tukey_df_area$comparison <- rownames(tukey_df_area)
+
+# Add significance stars based on p-values
+tukey_df_area$stars <- ifelse(tukey_df_area$`p adj` < 0.001, "***",
+                  ifelse(tukey_df_area$`p adj` < 0.01, "**",
+                  ifelse(tukey_df_area$`p adj` < 0.05, "*",
+                  ifelse(tukey_df_area$`p adj` < 0.1, ".", "ns"))))
+
+# Reorder columns for better readability
+tukey_df_area <- tukey_df_area[, c("comparison", "diff", "lwr", "upr", "p adj", "stars")]
+
+# Print the results
+print(tukey_df_area)
+ 
+
+
+#---------------------------
+#GRAPHICAL PLOTS (temporary -- only for visualization. Manuscript plots completed in Prism)
+#---------------------------
+
+
+#Plots:
+stat.test <- stat.test %>%
+  add_xy_position(x = "Names")
+  # boxplot
+  p <- ggplot(sub_df2, aes(x = Names, y = number_granules, fill = Names)) +
+    geom_boxplot(width = 0.6, alpha = 0.99, outlier.shape = NA) +
+    geom_jitter(size = 1.4, width = 0.15, alpha = 0.6, color = "black") +
+    # stat_pvalue_manual(stat.test,
+    #                    label = "p.adj.signif",
+    #                    tip.length = 0.01,
+    #                    size = 6) +
+    labs(
+      title = "G3BP1-GFP Foci per Cell",
+      y = "Number of G3BP1-GFP Foci / cell",
+      x = ""
+    ) +
+    theme_prism(base_size = 16) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1, face = "bold"),
+      legend.position = "none"
+    ) +
+    scale_fill_manual(values = c("#E67BB6", "#564F9E", "#DD6F66", "#6A4C4C"))
+  
+  p
+ 
+ ggsave(paste0(pathName, "G3BP1_boplot_numberGranules.png"), p, width = 6, height = 8, units = "in")
+ 
+ 
+#Plot to show the number of SGs per condition:
+numberGranules_Plot <- ggplot(sub_df2, aes(x = Names, y = number_granules, fill = Names)) +
+    geom_boxplot(width = 0.6, alpha = 0.99, outlier.shape = NA) +
+    geom_jitter(size = 1.4, width = 0.15, alpha = 0.6, color = "black") +
+   
+    labs(
+      title = "G3BP1-GFP Foci per Cell",
+      y = "Number of G3BP1-GFP Foci / cell",
+      x = ""
+    ) +
+    theme_prism(base_size = 16) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1, face = "bold"),
+      legend.position = "none"
+    ) +
+    scale_fill_manual(values = c("#E67BB6", "#564F9E", "#DD6F66", "#6A4C4C"))
+  
+p
+
+#Save numberGranules_Plot plot
+ggsave(paste0(pathName, "G3BP1_boplot_numberGranules.png"), numberGranules_Plot, width = 6, height = 8, units = "in")
+  
+ 
+#Repeat plot to show differences in the total size summed across all granules per cell
+sizeGranules_Plot <- ggplot(sub_df2, aes(x = Names, y = sum_Area, fill = Names)) +
+  geom_boxplot(width = 0.6, alpha = 0.99, outlier.shape = NA) +
+  geom_jitter(size = 1.4, width = 0.15, alpha = 0.6, color = "black") +
+ 
+  labs(
+    title = "Total G3BP1-GFP SG Area Per Cell",
+    y = "Summation of G3BP1-GFP Area / cell",
+    x = ""
+  ) +
+  theme_prism(base_size = 16) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1, face = "bold"),
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = c("#E67BB6", "#564F9E", "#DD6F66", "#6A4C4C"))
+
+p2
+
+#Save sizeGranules_Plot plot
+ggsave(paste0(pathName, "G3BP1_boplot_Area.png"), sizeGranules_Plot, width = 6, height = 8, units = "in")
+  
+
+ 
+#Export to Excel:
+
+wb <- createWorkbook()
+addWorksheet(wb, "original_df")
+addWorksheet(wb, "summary_info")
+addWorksheet(wb, "anova_tukey_SGs")
+addWorksheet(wb, "anova_tukey_Area")
+
+ 
+
+sub_df2
+writeData(wb, "original_df", sub_df2)
+writeData(wb, "summary_info", summary_statistics)
+writeData(wb, "anova_tukey_SGs", tukey_df)
+writeData(wb, "anova_tukey_Area", tukey_df_area)
+
+
+# Save the workbook
+saveWorkbook(wb, file = paste0(pathName, "G3BP1_results_12_2_25_dp.xlsx"), overwrite = TRUE)
+
+```
