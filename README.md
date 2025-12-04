@@ -18,3 +18,7 @@ This repository provides a complete workflow for analyzing calcium imaging exper
 - `CamilaV5_7_10_25_10_25_Update_additionalremove.cpproj` - Updated CellProfiler project with additional filtering
 - `CamilaV5.Rmd` - R Markdown script for aggregate-level analysis and visualization
 - `camila_ViolinV3_ (1).Rmd` - R Markdown script for single-cell analysis with mixed model statistics
+#### Under the ca-quant/G3BP1 folder:
+- `G3BP1_WT_CellProfiler.cpproj` - CellProfiler project for automated stress granule detection of G3BP1-GFP foci
+- `G3BP1_520UTR_CellProfiler.cpproj` - CellProfiler project for automated stress granule detection of G3BP1-GFP foci with a 520 UTR
+- `G3BP1_SG_AnalysisScript.Rmd` - R script to perform statistical analysis of the stress granule results from CellProfler
