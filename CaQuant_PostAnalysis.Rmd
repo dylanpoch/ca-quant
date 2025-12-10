@@ -1,0 +1,206 @@
+---
+title: "Ca-QuantAnalysis Script V1"
+output: html_document
+date: "2025-12-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Analysis Script for Ca-Quant: Automated analysis of ratiometric calcium imaging data.
+### Please refer to associated CaQuantV1.ccproj for the uploading and analyzing raw ratiometric calcium images 
+### This script analyzes the .csv files in the folder that you delineated  in the CellProfiler ExportToSpreasheets module
+
+```{r cars}
+#Install and import required packages:
+
+packages <- c(
+  "openxlsx",
+  "tidyverse",   # replaces ggplot2, tidyr, dplyr, stringr
+  "data.table",
+  "ggpval",
+  "ggprism",
+  "patchwork",
+  "rstatix",
+  "ggpubr",
+  "RColorBrewer",
+  "ggpattern",
+  "viridis"
+)
+
+# Install missing packages
+missing <- packages[!(packages %in% installed.packages()[, "Package"])]
+if (length(missing) > 0) {
+  install.packages(missing)
+}
+
+# Load packages quietly
+invisible(lapply(packages, library, character.only = TRUE))
+
+
+```
+
+
+```{r}
+
+#DATAFRAME CLEANING:
+
+#Determine save location:
+#-----------------
+save_Location <- "C:/Folder/where/CaQuantCellprofilerCSVFilesAreLocated/"
+df1 <- read.csv(paste0(save_Location, "conditionX_ExpressingCells.csv"))
+
+#Can leave as is unless explicitly changed in CellProfiler:
+df1 <- df1[, c("FileName_Cell", "ImageNumber", "Intensity_MeanIntensity_OrigGreen", "Intensity_IntegratedIntensity_OrigGreen",  "Intensity_MedianIntensity_OrigGreen")]
+
+
+
+#------------------------------------------
+
+#####-----------------
+#SEE NOTE on file naming:
+#####-----------------
+
+#Separate metadata based on filename. This WILL be specific to your file naming nomenclature that you personally used and may need to be updated.
+#Here the file naming system consists of (underscores determine separation of variable names): BiologicalRepX_Condition_TechnicalRepTimepoint.csv. Example: "Bio1_ConditionX_Tech1045": Biological rep 1; Condition X; Technical Replicate 1; timepoint 045
+sub_df1 <- df1 %>% separate(FileName_Cell, into = c("BiologicalRep", "Condition", "FileName2"), sep = "_")
+
+sub_df1$BiologicalRep <- str_sub(sub_df1$BiologicalRep, start = -1)
+sub_df1$Time <- str_sub(sub_df1$FileName2, start = -7, end = -5)
+sub_df1$Replicate <- str_sub(sub_df1$FileName2, start = 1, end = 1)
+
+#------------------------------------------
+
+
+df2 <- read.csv(paste0(save_Location, "conditionX_AllCells.csv"))
+df2 <- df2[, c("FileName_Cell", "ImageNumber", "Intensity_MeanIntensity_OrigGreen", "Intensity_IntegratedIntensity_OrigGreen",  "Intensity_MedianIntensity_OrigGreen")]
+
+sub_df2 <- df2 %>% separate(FileName_Cell, into = c("BiologicalRep", "Condition", "FileName2"), sep = "_")
+
+sub_df2$BiologicalRep <- str_sub(sub_df2$BiologicalRep, start = -1)
+sub_df2$Time <- str_sub(sub_df2$FileName2, start = -7, end = -5)
+sub_df2$Replicate <- str_sub(sub_df2$FileName2, start = 1, end = 1)
+
+sub_df2 <- sub_df2 %>% group_by(Time, Condition, BiologicalRep, Replicate) %>% summarize(total_numCells = n())
+
+sub_df2 <- merge(sub_df1, sub_df2)
+unique(sub_df2$BiologicalRep)
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+# REMOVE DATA THAT RESULTS IN DIV/0
+sub_df2 <- sub_df2[sub_df2$Intensity_MeanIntensity_OrigGreen != Inf, ]
+# REMOVE DATA THAT RESULTS IN NEGATIVE OR NO INTENSITY (likely false)
+sub_df2 <- sub_df2[sub_df2$Intensity_MeanIntensity_OrigGreen > 0, ]
+
+#This will total up the number of expressing cells foreach replicates 005 timepoint (grouped by biologicalrep, condition, and technicalrep):
+sub_df2 <- sub_df2 %>% group_by(BiologicalRep, Condition, Replicate) %>% mutate(ExpressingOriginalTimepoint = sum(Time == "005"))
+
+#REMOVE INITIAL TIMEPOINT (only used for counting unexpressing cells)
+sub_df2 <- sub_df2[sub_df2$Time != "005",]
+
+#GROUP BY TECHNICAL REPLICATE FIRST
+results <- sub_df2 %>%
+  group_by(across(c(Time, Condition, BiologicalRep, Replicate))) %>%
+  arrange(desc(Intensity_MeanIntensity_OrigGreen), .by_group = TRUE) %>%
+  mutate(row_num = row_number()) %>%
+  
+   summarize(
+    #Optional
+    Avg_IntensityperCell = mean(Intensity_MeanIntensity_OrigGreen, na.rm = TRUE),
+    #Optional
+    Summation_ofIntegratedIntensityperImage = sum(Intensity_MeanIntensity_OrigGreen, na.rm = TRUE),
+
+    ExpressingCells = n(),
+    #THIS IS THE RECCOMENDED READOUT, TAKING GREEN CHANNEL (cells with high intracellular concentration)/ INVERTED BLUE CHANNEL (cells with low intracellular concentration)
+    RatioExpressing = ExpressingCells /total_numCells) %>%
+    distinct()   
+    
+
+#GROUP BY BIOLOGICAL REPLICATE
+results_summary_AcrossRep <- results %>%
+  group_by(Time, Condition, BiologicalRep) %>%
+  summarise(NumberofExpressingCells_AvgReplicate = mean(RatioExpressing), SD = (sd(RatioExpressing)) )
+ 
+results <- merge(results, results_summary_AcrossRep, by = c("BiologicalRep","Condition", "Time"))
+ 
+#GROUP BY CONDITION
+results_summary_AcrossBio <- results_summary_AcrossRep %>%
+  group_by(Time, Condition) %>%
+  summarise(NumberofExpressingCells_AvgBiologicalReplicate = mean(NumberofExpressingCells_AvgReplicate), SE = (sd(NumberofExpressingCells_AvgReplicate) / sqrt(3)))
+
+#MERGE RESULTS TO CUMULATIVE TABLE
+results <- merge(results, results_summary_AcrossBio, by = c("Condition", "Time"))
+
+
+
+```
+
+
+```{r}
+#(OPTIONAL) FIGURE GENERATION:
+barPlot_Fig <- ggplot(results, aes(x = Condition, y = NumberofExpressingCells_AvgBiologicalReplicate, fill = Time,)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.5, alpha = 0.6, fill = "gray", color = "black") +
+  
+  geom_errorbar(aes(ymin = NumberofExpressingCells_AvgBiologicalReplicate - SE, ymax = NumberofExpressingCells_AvgBiologicalReplicate + SE), 
+                position = position_dodge(width = 0.8), width = 0.4) +
+  geom_point(
+  data = results,
+  aes(
+    x = Condition,
+    y = NumberofExpressingCells_AvgReplicate,
+    group = Time, 
+    color = BiologicalRep
+  ),
+  position = position_dodge(width = 0.4),  
+  size = 3,
+  alpha = 0.99,
+  show.legend = TRUE
+) +
+
+    theme_classic() +
+  labs(y = "Ratio of Expressing Cells", title = "Condition X: Expression Ratio") + 
+
+  theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 18), axis.title.x = element_blank()) +
+  theme(axis.text.x = element_text(size = 18, angle = 55, hjust = 1)) +
+  
+  labs(fill = " ") +
+  # Adjust color palette for Replicate
+  coord_cartesian(ylim = c(0, max(results$NumberofExpressingCells_AvgBiologicalReplicate + results$SE + 0.1)))+
+  scale_fill_viridis(discrete = TRUE, option = "C", direction = -1,  begin = 0.2, end = 0.6) +
+  
+  #ADJUST BASED ON THE NUMBER OF REPLICATES:
+  scale_color_manual(values = c( "blue", "black", "purple"))
+
+
+# Display the plot
+print(barPlot_Fig)
+
+ggsave(paste0(save_Location, "conditionX_v1.pdf"), barPlot_Fig, width = 10, height = 10)
+
+wb <- createWorkbook()
+
+#OR if file is already created:
+#wb <- loadWorkbook(save_Location)
+
+addWorksheet(wb, "BiologicalReplicate")
+addWorksheet(wb, "TechnicalReplicate")
+addWorksheet(wb, "RawData")
+
+writeData(wb, sheet = "BiologicalReplicate", x = results_summary_AcrossBio, startCol = 1, startRow = 1)
+writeData(wb, sheet = "TechnicalReplicate", x = results_summary_AcrossRep, startCol = 1, startRow = 1)
+writeData(wb, sheet = "RawData", x = results, startCol = 1, startRow = 1)
+
+saveWorkbook(wb, paste0(save_Location, "conditionX_v1.xlsx"), overwrite = T)
+
+```
+
