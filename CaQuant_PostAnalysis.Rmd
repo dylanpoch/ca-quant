@@ -50,6 +50,7 @@ invisible(lapply(packages, library, character.only = TRUE))
 
 #Determine save location:
 #-----------------
+condition_Label = "Condition X" #Change to be the variable name you want to use for the figure title (e.g., CMV-520)
 save_Location <- "C:/Folder/where/CaQuantCellprofilerCSVFilesAreLocated/"
 df1 <- read.csv(paste0(save_Location, "conditionX_ExpressingCells.csv"))
 
@@ -167,7 +168,7 @@ barPlot_Fig <- ggplot(results, aes(x = Condition, y = NumberofExpressingCells_Av
 ) +
 
     theme_classic() +
-  labs(y = "Ratio of Expressing Cells", title = "Condition X: Expression Ratio") + 
+  labs(y = "Ratio of Expressing Cells", title = condition_Label) + 
 
   theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
   theme(axis.title.y = element_text(size = 18), axis.title.x = element_blank()) +
